@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 import argparse
 import json
-from ytmusicapi import YTMusic
+import os
+from ytmusicapi import OAuthCredentials, YTMusic
 from typing import Dict, List, Optional
 
+from dotenv import load_dotenv
+load_dotenv()
+
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+
+
 class YouTubeMusicHistoryProcessor:
-    def __init__(self, browser_auth_file="browser.json"):
-        self.ytmusic = YTMusic(browser_auth_file)
+    def __init__(self):
+        self.ytmusic = YTMusic("oauth.json", oauth_credentials=OAuthCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET))
+        # self.ytmusic = YTMusic(browser_auth_file)
         self.watch_history_file = "watch-history.json"
         self.library_uploads_cache = None
         self.queried_ids = set()
         self.successful_api_count = 0
         self.songs = []
-        self.batch_size = 20
 
     def read_watch_history(self) -> List[Dict]:
         """Read and parse the YouTube Music watch history file"""
@@ -88,36 +96,30 @@ class YouTubeMusicHistoryProcessor:
         print("Fetching all library uploads...")
         try:
             self.library_uploads_cache = self.ytmusic.get_library_upload_songs(limit=None)
+            self.successful_api_count += 1
             print(f"Successfully fetched {len(self.library_uploads_cache)} library uploads")
-
-            # Write library uploads to file
-            with open("library-uploads.json", "w", encoding="utf-8") as file:
-                json.dump(self.library_uploads_cache, indent=2, ensure_ascii=False, fp=file)
 
             return self.library_uploads_cache
         except Exception as e:
             print(f"Error fetching library uploads: {e}")
             return []
 
-    def find_upload_match(self, artist_name: str, track_name: str) -> Optional[Dict]:
+    def find_upload_match(self, id: str) -> Optional[Dict]:
         """Search through library uploads to find a matching song"""
         uploads = self.get_library_uploads()
         
         # Normalize search terms for better matching
-        artist_name_lower = artist_name.lower()
-        track_name_lower = track_name.lower()
         
         for upload in uploads:
             # Extract upload artist and title for comparison
-            upload_artist = upload.get('artists', [{}])[0].get('name', '').lower() if upload.get('artists') else ''
-            upload_title = upload.get('title', '').lower()
+            # upload_artist = upload.get('artists', [{}])[0].get('name', '').lower() if upload.get('artists') else ''
+            # upload_title = upload.get('title', '').lower()
             
             # Check for match (flexible matching for slight naming differences)
-            if (artist_name_lower in upload_artist or upload_artist in artist_name_lower) and \
-               (track_name_lower in upload_title or upload_title in track_name_lower):
+            if id == upload.get('videoId'):
                 
                 # Get artist name from the upload if available
-                actual_artist = upload.get('artists', [{}])[0].get('name', '') if upload.get('artists') else artist_name
+                actual_artist = upload.get('artists', [{}])[0].get('name', '') if upload.get('artists') else 'Unknown'
                 
                 # Extract album name correctly based on the structure
                 album_name = ''
@@ -136,18 +138,12 @@ class YouTubeMusicHistoryProcessor:
 
     def process_library_upload(self, song: Dict, index: int) -> bool:
         """Process a library upload song to find album info"""
-        upload_match = self.find_upload_match(song['artistName'], song['trackName'])
+        upload_match = self.find_upload_match(song['id'])
         if not upload_match:
             return False
             
         self.songs[index]['albumName'] = upload_match['albumName']
-        
-        # Update artist name with the actual one from library uploads
-        if 'artistName' in upload_match:
-            original_artist = song['artistName']
-            new_artist = upload_match['artistName']
-            self.songs[index]['artistName'] = new_artist
-            print(f"Updated artist for '{song['trackName']}': '{original_artist}' -> '{new_artist}'")
+        self.songs[index]['artistName'] = upload_match['artistName']
         
         return True
 
@@ -155,6 +151,7 @@ class YouTubeMusicHistoryProcessor:
         """Process a regular (non-library) song to find album info"""
         search_query = f"{song['artistName']} - {song['trackName']}"
         search_results = self.ytmusic.search(search_query, filter="songs", limit=1)
+        self.successful_api_count += 1
         
         if search_results and 'album' in search_results[0]:
             self.songs[index]['albumName'] = search_results[0]['album']['name']
@@ -162,36 +159,46 @@ class YouTubeMusicHistoryProcessor:
             
         return False
 
-    def process_batch(self, start_index: int, end_index: int):
-        """Process a batch of songs to fetch album information"""
-        print(f"Processing items {start_index} to {end_index}")
-        
-        items_to_process = min(end_index - start_index + 1, len(self.songs) - start_index)
+    def fetch_album_info(self):
+        """Fetch album information for all songs"""
+        print(f"Processing all {len(self.songs)} songs")
         completed_items = 0
         
-        for i in range(start_index, min(end_index + 1, len(self.songs))):
-            song = self.songs[i]
+        # Create a map of song_id to album info for caching
+        id_to_album_info = {}
+        
+        for i, song in enumerate(self.songs):
             song_id = song.get('id', '')
             
-            # Skip if this ID has already been queried
-            if song_id and song_id in self.queried_ids:
-                print(f"Skipping already queried ID: {song_id}")
+            # Check if we already have info for this ID
+            if song_id and song_id in self.queried_ids and song_id in id_to_album_info:
+                # print(f"Using cached album info for ID: {song_id}")
+                # Reuse the cached album info
+                if 'albumName' in id_to_album_info[song_id]:
+                    self.songs[i]['albumName'] = id_to_album_info[song_id]['albumName']
+                if 'artistName' in id_to_album_info[song_id]:
+                    self.songs[i]['artistName'] = id_to_album_info[song_id]['artistName']
                 completed_items += 1
                 continue
             
             success = False
             try:
                 # Process based on song type
-                if song.get('isLibraryUpload', True):
+                if song.get('isLibraryUpload', False):
+                    # print(f"Processing library upload: {song['trackName']}")
                     success = self.process_library_upload(song, i)
                 else:
                     success = self.process_regular_song(song, i)
                 
                 # Update successful count and record queried ID
                 if success:
-                    self.successful_api_count += 1
-                if song_id:
-                    self.queried_ids.add(song_id)
+                    # Cache the album info for future use
+                    if song_id:
+                        self.queried_ids.add(song_id)
+                        id_to_album_info[song_id] = {
+                            'albumName': song.get('albumName', ''),
+                            'artistName': song.get('artistName', '')
+                        }
                     
             except Exception as e:
                 print(f"Error processing item {i}: {e}")
@@ -199,22 +206,10 @@ class YouTubeMusicHistoryProcessor:
             completed_items += 1
             
             # Show progress periodically
-            if completed_items % 5 == 0 or completed_items == items_to_process:
-                print(f"Progress: {completed_items}/{items_to_process} "
-                      f"({self.successful_api_count} album names found)")
+            if completed_items % 10 == 0 or completed_items == len(self.songs):
+                print(f"Progress: {completed_items}/{len(self.songs)} "
+                      f"({self.successful_api_count} API Requests)")
         
-        return completed_items
-
-    def fetch_album_info(self):
-        """Fetch album information for all songs in batches"""
-        total_songs = len(self.songs)
-        current_index = 0
-        
-        while current_index < total_songs:
-            end_index = min(current_index + self.batch_size - 1, total_songs - 1)
-            self.process_batch(current_index, end_index)
-            current_index = end_index + 1
-            
         self.finalize_data()
 
     def finalize_data(self):
@@ -278,8 +273,8 @@ def main():
         processor.songs = processor.songs[:500]
         print("Running in test mode - limited to 500 songs")
 
-    print("\twatch-history.json does not have album names, grabbing them from Youtube API (only 90% success rate)")
-    print("\tIf the program stops before it says file written, an error occurred, just close and re-run\n")
+    # print("watch-history.json does not have album names, grabbing them from Youtube API (only 90% success rate)")
+    # print("If the program stops before it says file written, an error occurred, just close and re-run\n")
 
     # Write test file with data so far
     processor.write_test_file()

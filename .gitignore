@@ -1,11 +1,12 @@
 
 .venv/
-
+.env
 watch-history.json
 
 formatted*.json
 
 browser.json
+oauth.json
 xd.py
 
 meta-img.png

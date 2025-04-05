@@ -1,0 +1,12 @@
+
+.venv/
+
+watch-history.json
+
+formatted*.json
+
+browser.json
+xd.py
+
+meta-img.png
+/site/*

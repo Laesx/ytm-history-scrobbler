@@ -8,13 +8,19 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+# CLIENT_ID = os.getenv("CLIENT_ID")
+# CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 
 class YouTubeMusicHistoryProcessor:
     def __init__(self):
-        self.ytmusic = YTMusic("oauth.json", oauth_credentials=OAuthCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET))
+
+        if not os.path.exists("oauth.json"):
+            self.authenticated = False
+            self.ytmusic = YTMusic()
+        else:
+            self.authenticated = True
+            self.ytmusic = YTMusic("oauth.json", oauth_credentials=OAuthCredentials(client_id=os.getenv("CLIENT_ID"), client_secret=os.getenv("CLIENT_SECRET")))
         # self.ytmusic = YTMusic(browser_auth_file)
         self.watch_history_file = "watch-history.json"
         self.cache_file = "api_cache.json"
@@ -115,6 +121,12 @@ class YouTubeMusicHistoryProcessor:
 
     def get_library_uploads(self) -> List[Dict]:
         """Fetch all library uploads from the YouTube Music account"""
+
+        if not self.authenticated:
+            print("""WARNING: You're not authenticated but library uploads were found in the watch history, 
+                    consider authenticating to get all possible entries, skipping library uploads""")
+            return []
+
         if self.library_uploads_cache is not None:
             return self.library_uploads_cache
         
@@ -123,7 +135,7 @@ class YouTubeMusicHistoryProcessor:
             self.library_uploads_cache = self.api_cache[cache_key]
             print(f"Using cached library uploads ({len(self.library_uploads_cache)} items)")
             return self.library_uploads_cache
-        
+
         print("Fetching all library uploads...")
         try:
             self.library_uploads_cache = self.ytmusic.get_library_upload_songs(limit=None)
@@ -316,7 +328,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Process YouTube Music watch history')
     parser.add_argument('--limit', type=int, help='Limit the number of songs to process')
-    parser.add_argument('--no-album', action='store_true', help='Do not fetch album information')
+    # parser.add_argument('--no-album', action='store_true', help='Do not fetch album information')
     parser.add_argument('--only-uploads', action='store_true', help='Only process library uploads')
     parser.add_argument('--test-mode', action='store_true', help='Run in test mode (limit to 500 songs)')
     args = parser.parse_args()
@@ -338,13 +350,9 @@ def main():
         print("Running in test mode - limited to 500 songs")
 
     # Write test file with data so far
-    processor.write_test_file()
-    
-    # Fetch album information or finalize directly
-    if not args.no_album:
-        processor.fetch_album_info()
-    else:
-        processor.finalize_data()
+    # processor.write_test_file()
+
+    processor.fetch_album_info()
 
 if __name__ == "__main__":
     main() 

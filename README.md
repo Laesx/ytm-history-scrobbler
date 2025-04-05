@@ -1,8 +1,19 @@
 # Youtube Music History Scrobbler
 
-## ~~Fixed as of 05/04/2025~~
+## Fixed as of 05/04/2025
 
-Rewritten in python from https://github.com/beebls/youtube-music-history-scrobbler
+Rewritten in python, original from https://github.com/beebls/youtube-music-history-scrobbler
+
+It works but it's a complete mess and it's really slow (took like 20 minutes for 17k entries). Problem seems to be the API library being super slow, the typescript one is much faster.
+
+Pending a rewrite when I have some more time.
+
+Added:
+- Ability to set up authentication to have access to your uploads library. https://ytmusicapi.readthedocs.io/en/stable/setup/oauth.html
+- Saves a cache/progress in case it crashes or you cancel so you can resume later.
+
+
+
 
 ---
 

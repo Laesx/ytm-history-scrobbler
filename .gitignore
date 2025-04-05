@@ -2,6 +2,7 @@
 .venv/
 .env
 watch-history.json
+api_cache.json
 
 formatted*.json
 

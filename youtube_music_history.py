@@ -17,14 +17,39 @@ class YouTubeMusicHistoryProcessor:
         self.ytmusic = YTMusic("oauth.json", oauth_credentials=OAuthCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET))
         # self.ytmusic = YTMusic(browser_auth_file)
         self.watch_history_file = "watch-history.json"
+        self.cache_file = "api_cache.json"
         self.library_uploads_cache = None
         self.queried_ids = set()
         self.successful_api_count = 0
         self.songs = []
+        self.api_cache = {}
+        self.load_cache()
+
+    def load_cache(self):
+        """Load the API cache from file if it exists"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, "r", encoding="utf-8") as file:
+                    self.api_cache = json.load(file)
+                print(f"Loaded cache with {len(self.api_cache)} entries")
+                # Load previously queried IDs
+                self.queried_ids = set(self.api_cache.keys())
+        except Exception as e:
+            print(f"Error loading cache file: {e}")
+            self.api_cache = {}
+
+    def save_cache(self):
+        """Save the current API cache to file"""
+        try:
+            with open(self.cache_file, "w", encoding="utf-8") as file:
+                json.dump(self.api_cache, file, indent=2, ensure_ascii=False)
+            # print(f"Saved API cache with {len(self.api_cache)} entries")
+        except Exception as e:
+            print(f"Error saving cache file: {e}")
 
     def read_watch_history(self) -> List[Dict]:
         """Read and parse the YouTube Music watch history file"""
-        print("\n\tReading YouTube Music history from watch-history.json\n")
+        print("\nReading YouTube Music history from watch-history.json\n")
         try:
             with open(self.watch_history_file, "r", encoding="utf-8") as file:
                 return json.load(file)
@@ -86,11 +111,17 @@ class YouTubeMusicHistoryProcessor:
             
             self.songs.append(song)
         
-        print(f"\n\tFound {len(self.songs)} YouTube Music songs in watch-history.json")
+        print(f"Found {len(self.songs)} YouTube Music songs in watch-history.json")
 
     def get_library_uploads(self) -> List[Dict]:
         """Fetch all library uploads from the YouTube Music account"""
         if self.library_uploads_cache is not None:
+            return self.library_uploads_cache
+        
+        cache_key = "library_uploads"
+        if cache_key in self.api_cache:
+            self.library_uploads_cache = self.api_cache[cache_key]
+            print(f"Using cached library uploads ({len(self.library_uploads_cache)} items)")
             return self.library_uploads_cache
         
         print("Fetching all library uploads...")
@@ -98,6 +129,10 @@ class YouTubeMusicHistoryProcessor:
             self.library_uploads_cache = self.ytmusic.get_library_upload_songs(limit=None)
             self.successful_api_count += 1
             print(f"Successfully fetched {len(self.library_uploads_cache)} library uploads")
+            
+            # Save to cache
+            self.api_cache[cache_key] = self.library_uploads_cache
+            self.save_cache()
 
             return self.library_uploads_cache
         except Exception as e:
@@ -150,11 +185,38 @@ class YouTubeMusicHistoryProcessor:
     def process_regular_song(self, song: Dict, index: int) -> bool:
         """Process a regular (non-library) song to find album info"""
         search_query = f"{song['artistName']} - {song['trackName']}"
+        
+        # Check cache for this query
+        song_id = song.get('id', '')
+        if song_id and song_id in self.api_cache:
+            cached_data = self.api_cache[song_id]
+            if 'albumName' in cached_data:
+                self.songs[index]['albumName'] = cached_data['albumName']
+                return True
+        
+
+        
         search_results = self.ytmusic.search(search_query, filter="songs", limit=1)
         self.successful_api_count += 1
         
         if search_results and 'album' in search_results[0]:
-            self.songs[index]['albumName'] = search_results[0]['album']['name']
+            album_name = search_results[0]['album']['name']
+            self.songs[index]['albumName'] = album_name
+
+            # Special case for Release (Some songs don't have and artist page so they are listed as "Release" in the watch history)
+            if song['artistName'] == "Release" and 'artists' in search_results[0]:
+                self.songs[index]['artistName'] = search_results[0]['artists'][0]['name']
+            
+            # Cache the result
+            if song_id:
+                self.api_cache[song_id] = {
+                    'albumName': album_name,
+                    'artistName': song.get('artistName', '')
+                }
+                # Save cache periodically (every 10 API calls)
+                if self.successful_api_count % 10 == 0:
+                    self.save_cache()
+                    
             return True
             
         return False
@@ -164,20 +226,17 @@ class YouTubeMusicHistoryProcessor:
         print(f"Processing all {len(self.songs)} songs")
         completed_items = 0
         
-        # Create a map of song_id to album info for caching
-        id_to_album_info = {}
-        
         for i, song in enumerate(self.songs):
             song_id = song.get('id', '')
             
             # Check if we already have info for this ID
-            if song_id and song_id in self.queried_ids and song_id in id_to_album_info:
-                # print(f"Using cached album info for ID: {song_id}")
+            if song_id and song_id in self.queried_ids and song_id in self.api_cache:
                 # Reuse the cached album info
-                if 'albumName' in id_to_album_info[song_id]:
-                    self.songs[i]['albumName'] = id_to_album_info[song_id]['albumName']
-                if 'artistName' in id_to_album_info[song_id]:
-                    self.songs[i]['artistName'] = id_to_album_info[song_id]['artistName']
+                cached_data = self.api_cache[song_id]
+                if 'albumName' in cached_data:
+                    self.songs[i]['albumName'] = cached_data['albumName']
+                if 'artistName' in cached_data:
+                    self.songs[i]['artistName'] = cached_data['artistName']
                 completed_items += 1
                 continue
             
@@ -185,23 +244,26 @@ class YouTubeMusicHistoryProcessor:
             try:
                 # Process based on song type
                 if song.get('isLibraryUpload', False):
-                    # print(f"Processing library upload: {song['trackName']}")
                     success = self.process_library_upload(song, i)
                 else:
                     success = self.process_regular_song(song, i)
                 
                 # Update successful count and record queried ID
-                if success:
-                    # Cache the album info for future use
-                    if song_id:
-                        self.queried_ids.add(song_id)
-                        id_to_album_info[song_id] = {
-                            'albumName': song.get('albumName', ''),
-                            'artistName': song.get('artistName', '')
-                        }
+                if success and song_id:
+                    self.queried_ids.add(song_id)
+                    self.api_cache[song_id] = {
+                        'albumName': song.get('albumName', ''),
+                        'artistName': song.get('artistName', '')
+                    }
+                    
+                    # Save cache periodically (every 10 completed items)
+                    # if completed_items % 10 == 0:
+                    #     self.save_cache()
                     
             except Exception as e:
                 print(f"Error processing item {i}: {e}")
+                # Save cache on error to preserve progress
+                self.save_cache()
             
             completed_items += 1
             
@@ -210,6 +272,8 @@ class YouTubeMusicHistoryProcessor:
                 print(f"Progress: {completed_items}/{len(self.songs)} "
                       f"({self.successful_api_count} API Requests)")
         
+        # Final cache save before finalizing data
+        self.save_cache()
         self.finalize_data()
 
     def finalize_data(self):
@@ -272,9 +336,6 @@ def main():
     if args.test_mode:
         processor.songs = processor.songs[:500]
         print("Running in test mode - limited to 500 songs")
-
-    # print("watch-history.json does not have album names, grabbing them from Youtube API (only 90% success rate)")
-    # print("If the program stops before it says file written, an error occurred, just close and re-run\n")
 
     # Write test file with data so far
     processor.write_test_file()

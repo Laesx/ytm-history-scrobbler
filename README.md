@@ -8,6 +8,10 @@ It works but it's a complete mess and it's really slow (took like 20 minutes for
 
 Pending a rewrite when I have some more time.
 
+To Do:
+Parse the titles from the api responses so you can choose if keeping the original language titles that come in the Takeout (e.g. Japanese titles) or the localized english titles.
+Make it faster: transfer eveything back to node I guess, or find another API library that's faster ooooor query the node API from python (can you even do that?)
+
 Added:
 - Ability to set up authentication to have access to your uploads library. https://ytmusicapi.readthedocs.io/en/stable/setup/oauth.html
 - Saves a cache/progress in case it crashes or you cancel so you can resume later.
